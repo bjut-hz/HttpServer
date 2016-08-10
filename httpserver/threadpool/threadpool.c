@@ -4,6 +4,22 @@
 
 #include "threadpool.h"
 
+/*
+pthread_cond_wait() 用于阻塞当前线程，等待别的线程使用pthread_cond_signal()
+或pthread_cond_broadcast来唤醒它。 pthread_cond_wait() 必须与pthread_mutex 配套使用。
+pthread_cond_wait()函数一进入wait状态就会自动release mutex。
+当其他线程通过pthread_cond_signal()或pthread_cond_broadcast，把该线程唤醒，使pthread_cond_wait()通过
+（返回）时，该线程又自动获得该mutex。pthread_cond_signal函数的作用是发送一个信号给另外一
+个正在处于阻塞等待状态的线程,使其脱离阻塞状态,继续执行.如果没有线程处在阻塞等待状态,
+pthread_cond_signal也会成功返回。
+
+pthread_cond_signal 只发信号,内部不会解锁,在Linux 线程中，有两个队列，分别是cond_wait队列和mutex_lock队列， 
+cond_signal只是让线程从cond_wait队列移到mutex_lock队列，而不用返回到用户空间，不会有性能的损耗
+
+pthread_cond_wait 先解锁,等待,有信号来,上锁,执行while检查防止另外的线程更改条件
+循环判断的原因如下：假设2个线程在getq阻塞，然后两者都被激活，而其中一个线程运行比较块，
+快速消耗了2个数据，另一个线程醒来的时候已经没有新 数据可以消耗了。
+*/
 /**
  * 线程池关闭的方式
  */
@@ -189,6 +205,10 @@ int threadpool_add(threadpool_t *pool, void (*function)(void *),
          * 如果由因为任务队列空阻塞的线程，此时会有一个被唤醒
          * 如果没有则什么都不做
          */
+        
+        //pthread_cond_signal只能唤醒已经处于pthread_cond_wait的线程
+        //也就是说，如果signal的时候没有线程在condition wait，那么本次signal就没有效果，
+        //后续的线程进入condition wait之后，无法被之前的signal唤醒。
         if(pthread_cond_signal(&(pool->notify)) != 0) {
             err = threadpool_lock_failure;
             break;
@@ -287,6 +307,7 @@ static void *threadpool_thread(void *threadpool)
     threadpool_t *pool = (threadpool_t *)threadpool;
     threadpool_task_t task;
 
+    //线程实体，等到具体的job的来临时，执行相应的job
     for(;;) {
         /* Lock must be taken to wait on conditional variable */
         /* 取得互斥锁资源 */
